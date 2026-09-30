@@ -37,6 +37,7 @@ end
 -- -----------------------------------------------------------------------------
 local defaults = {
   -- General settings
+  backend = "auto",   -- "auto" (detects OS), "playerctl" (Linux), "osascript" (macOS), "windows" (Windows)
   player = "spotify", -- Player name for playerctl (e.g., "spotify", "spotifyd")
   interval_ms = 1000, -- Update interval in milliseconds
 
@@ -81,6 +82,20 @@ M._timer = nil
 -- Helper Functions
 -- -----------------------------------------------------------------------------
 
+-- Detects the appropriate backend based on OS or configuration.
+local function detect_backend()
+  if cfg.backend and cfg.backend ~= "auto" then
+    return cfg.backend
+  end
+  if vim.fn.has("mac") == 1 or vim.fn.has("macunix") == 1 or (jit and jit.os == "OSX") then
+    return "osascript"
+  elseif vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1 or (jit and jit.os == "Windows") then
+    return "windows"
+  else
+    return "playerctl"
+  end
+end
+
 -- Executes a system command and returns the first line of the output.
 local function safe_system(cmd)
   local output = vim.fn.systemlist(cmd)
@@ -88,11 +103,6 @@ local function safe_system(cmd)
     return nil
   end
   return output[1]
-end
-
--- Checks if playerctl is available on the system.
-local function playerctl_available()
-  return vim.fn.executable("playerctl") == 1
 end
 
 -- Formats a seconds string to MM:SS format.
@@ -113,11 +123,14 @@ local function center_text(text, width)
 end
 
 -- -----------------------------------------------------------------------------
--- Main Logic
+-- Backend: playerctl (Linux)
 -- -----------------------------------------------------------------------------
 
--- Gets all the necessary information from the player.
-local function get_player_info()
+local function playerctl_available()
+  return vim.fn.executable("playerctl") == 1
+end
+
+local function get_playerctl_info()
   if not playerctl_available() then
     return nil, "Error: `playerctl` is not installed."
   end
@@ -141,6 +154,247 @@ local function get_player_info()
     loop = safe_system(string.format("playerctl -p %s loop", player)),
     volume = safe_system(string.format("playerctl -p %s volume", player)),
   }
+end
+
+local function run_playerctl_command(action)
+  if not playerctl_available() then
+    vim.notify("spotify-player: `playerctl` is not installed.", vim.log.levels.ERROR)
+    return
+  end
+  if action == "play-pause" then
+    vim.fn.system(string.format("playerctl -p %s play-pause", cfg.player))
+  elseif action == "next" then
+    vim.fn.system(string.format("playerctl -p %s next", cfg.player))
+  elseif action == "previous" then
+    vim.fn.system(string.format("playerctl -p %s previous", cfg.player))
+  elseif action == "volume_up" then
+    vim.fn.system(string.format("playerctl -p %s volume 0.05+", cfg.player))
+  elseif action == "volume_down" then
+    vim.fn.system(string.format("playerctl -p %s volume 0.05-", cfg.player))
+  elseif action == "toggle_shuffle" then
+    vim.fn.system(string.format("playerctl -p %s shuffle Toggle", cfg.player))
+  elseif action == "toggle_repeat" then
+    local current_loop = safe_system(string.format("playerctl -p %s loop", cfg.player))
+    if current_loop == "None" then
+      vim.fn.system(string.format("playerctl -p %s loop Playlist", cfg.player))
+    elseif current_loop == "Playlist" then
+      vim.fn.system(string.format("playerctl -p %s loop Track", cfg.player))
+    else
+      vim.fn.system(string.format("playerctl -p %s loop None", cfg.player))
+    end
+  end
+end
+
+-- -----------------------------------------------------------------------------
+-- Backend: osascript (macOS)
+-- -----------------------------------------------------------------------------
+
+local function osascript_available()
+  return vim.fn.executable("osascript") == 1
+end
+
+local function get_osascript_info()
+  if not osascript_available() then
+    return nil, "Error: `osascript` is not available on this system."
+  end
+
+  local script = [[
+    if application "Spotify" is running then
+      tell application "Spotify"
+        set s_state to player state as string
+        set s_title to name of current track
+        set s_artist to artist of current track
+        set s_album to album of current track
+        set s_pos to player position as string
+        set s_dur to ((duration of current track) / 1000) as string
+        set s_shuf to shuffling as string
+        set s_rep to repeating as string
+        set s_vol to ((sound volume as real) / 100) as string
+        return s_state & "<!#sep#!>" & s_title & "<!#sep#!>" & s_artist & "<!#sep#!>" & s_album & "<!#sep#!>" & s_pos & "<!#sep#!>" & s_dur & "<!#sep#!>" & s_shuf & "<!#sep#!>" & s_rep & "<!#sep#!>" & s_vol
+      end tell
+    else
+      return "NOT_RUNNING"
+    end if
+  ]]
+
+  local output = safe_system({ "osascript", "-e", script })
+  if not output or output == "NOT_RUNNING" then
+    return nil, "Player 'Spotify' not active."
+  end
+
+  local parts = vim.split(output, "<!#sep#!>", { plain = true })
+  if #parts < 9 then
+    return nil, "Could not parse Spotify status."
+  end
+
+  local dur_sec = tonumber(parts[6]) or 0
+
+  return {
+    status = parts[1],
+    title = parts[2],
+    artist = parts[3],
+    album = parts[4],
+    position = parts[5],
+    length = tostring(math.floor(dur_sec * 1000000)),
+    shuffle = (parts[7] == "true") and "On" or "Off",
+    loop = (parts[8] == "true") and "Playlist" or "None",
+    volume = parts[9],
+  }
+end
+
+local function run_osascript_command(action)
+  if not osascript_available() then
+    vim.notify("spotify-player: `osascript` is not available.", vim.log.levels.ERROR)
+    return
+  end
+  local script = nil
+  if action == "play-pause" then
+    script = 'tell application "Spotify" to playpause'
+  elseif action == "next" then
+    script = 'tell application "Spotify" to next track'
+  elseif action == "previous" then
+    script = 'tell application "Spotify" to previous track'
+  elseif action == "volume_up" then
+    script = 'tell application "Spotify" to set sound volume to (sound volume + 5)'
+  elseif action == "volume_down" then
+    script = 'tell application "Spotify" to set sound volume to (sound volume - 5)'
+  elseif action == "toggle_shuffle" then
+    script = 'tell application "Spotify" to set shuffling to not shuffling'
+  elseif action == "toggle_repeat" then
+    script = 'tell application "Spotify" to set repeating to not repeating'
+  end
+  if script then
+    vim.fn.system({ "osascript", "-e", script })
+  end
+end
+
+-- -----------------------------------------------------------------------------
+-- Backend: Windows (PowerShell / SMTC & Media Keys)
+-- -----------------------------------------------------------------------------
+
+local function get_powershell_cmd()
+  if vim.fn.executable("powershell.exe") == 1 then
+    return "powershell.exe"
+  elseif vim.fn.executable("powershell") == 1 then
+    return "powershell"
+  elseif vim.fn.executable("pwsh") == 1 then
+    return "pwsh"
+  end
+  return nil
+end
+
+local function get_windows_info()
+  local ps = get_powershell_cmd()
+  if not ps then
+    return nil, "Error: PowerShell is not available."
+  end
+
+  local script = [=[
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+      [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager,Windows.Media,ContentType=WindowsRuntime] > $null
+      $mgrOp = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
+      $mgrOp.AsTask().Wait(400)
+      $mgr = $mgrOp.GetResults()
+      $s = $mgr.GetCurrentSession()
+      if ($s -and $s.SourceAppUserModelId -like '*Spotify*') {
+        $pOp = $s.TryGetMediaPropertiesAsync()
+        $pOp.AsTask().Wait(400)
+        $p = $pOp.GetResults()
+        $tl = $s.GetTimelineProperties()
+        $st = $s.GetPlaybackInfo().PlaybackStatus.ToString()
+        $pos = [math]::Round($tl.Position.TotalSeconds)
+        $dur = [math]::Round($tl.EndTime.TotalSeconds)
+        Write-Output "$st<!#sep#!>$($p.Title)<!#sep#!>$($p.Artist)<!#sep#!>$($p.AlbumTitle)<!#sep#!>$pos<!#sep#!>$dur"
+        exit 0
+      }
+    } catch {}
+    $proc = Get-Process spotify | Where-Object { $_.MainWindowTitle } | Select-Object -First 1
+    if (-not $proc) {
+      Write-Output "NOT_RUNNING"
+      exit 0
+    }
+    $title = $proc.MainWindowTitle
+    if ($title -match '^Spotify') {
+      Write-Output "Paused<!#sep#!>Spotify<!#sep#!>Paused<!#sep#!><!#sep#!>0<!#sep#!>0"
+    } else {
+      $idx = $title.IndexOf(' - ')
+      if ($idx -gt 0) {
+        $artist = $title.Substring(0, $idx)
+        $track = $title.Substring($idx + 3)
+        Write-Output "Playing<!#sep#!>$track<!#sep#!>$artist<!#sep#!><!#sep#!>0<!#sep#!>0"
+      } else {
+        Write-Output "Playing<!#sep#!>$title<!#sep#!>Unknown<!#sep#!><!#sep#!>0<!#sep#!>0"
+      }
+    }
+  ]=]
+
+  local output = safe_system({ ps, "-NoProfile", "-NonInteractive", "-Command", script })
+  if not output or output == "NOT_RUNNING" then
+    return nil, "Player 'Spotify' not active."
+  end
+
+  local parts = vim.split(output, "<!#sep#!>", { plain = true })
+  if #parts < 6 then
+    return nil, "Could not parse Spotify status."
+  end
+
+  local dur_sec = tonumber(parts[6]) or 0
+
+  return {
+    status = parts[1] ~= "" and parts[1] or "Unknown",
+    title = parts[2] ~= "" and parts[2] or "Unknown",
+    artist = parts[3] ~= "" and parts[3] or "Unknown",
+    album = parts[4] ~= "" and parts[4] or "Unknown",
+    position = parts[5] or "0",
+    length = tostring(math.floor(dur_sec * 1000000)),
+    shuffle = "Off",
+    loop = "None",
+    volume = "1.0",
+  }
+end
+
+local function run_windows_command(action)
+  local ps = get_powershell_cmd()
+  if not ps then
+    vim.notify("spotify-player: PowerShell is not available.", vim.log.levels.ERROR)
+    return
+  end
+  local key_code = nil
+  if action == "play-pause" then
+    key_code = 179 -- VK_MEDIA_PLAY_PAUSE
+  elseif action == "next" then
+    key_code = 176 -- VK_MEDIA_NEXT_TRACK
+  elseif action == "previous" then
+    key_code = 177 -- VK_MEDIA_PREV_TRACK
+  elseif action == "volume_up" then
+    key_code = 175 -- VK_VOLUME_UP
+  elseif action == "volume_down" then
+    key_code = 174 -- VK_VOLUME_DOWN
+  elseif action == "toggle_shuffle" or action == "toggle_repeat" then
+    vim.notify("spotify-player: Shuffle/Repeat toggling via media keys is not supported on Windows.", vim.log.levels.INFO)
+    return
+  end
+  if key_code then
+    local cmd = string.format("(New-Object -ComObject WScript.Shell).SendKeys([char]%d)", key_code)
+    vim.fn.system({ ps, "-NoProfile", "-NonInteractive", "-Command", cmd })
+  end
+end
+
+-- -----------------------------------------------------------------------------
+-- Main Logic
+-- -----------------------------------------------------------------------------
+
+-- Gets all the necessary information from the player.
+local function get_player_info()
+  local backend = detect_backend()
+  if backend == "osascript" then
+    return get_osascript_info()
+  elseif backend == "windows" then
+    return get_windows_info()
+  else
+    return get_playerctl_info()
+  end
 end
 
 -- Formats the player information into lines for the window.
@@ -167,7 +421,7 @@ local function format_content(info)
   lines[5] = center_text(controls_line, bar_width + 2)
 
   local pos_s = tonumber(info.position) or 0
-  local len_s = (tonumber(info.length) or 0) / 1000000 -- mpris:length is in microseconds
+  local len_s = (tonumber(info.length) or 0) / 1000000 -- length is in microseconds
   local time_str = string.format("%s / %s", format_time(pos_s), format_time(len_s))
   
   local progress_pct = 0
@@ -272,13 +526,17 @@ function M.toggle()
   end
 end
 
--- Generic function to send commands to playerctl.
+-- Generic function to send commands to the player.
 local function run_command(action)
-  if not playerctl_available() then
-    vim.notify("spotify-player: `playerctl` is not installed.", vim.log.levels.ERROR)
-    return
+  local backend = detect_backend()
+  if backend == "osascript" then
+    run_osascript_command(action)
+  elseif backend == "windows" then
+    run_windows_command(action)
+  else
+    run_playerctl_command(action)
   end
-  vim.fn.system(string.format("playerctl -p %s %s", cfg.player, action))
+
   if M._win and vim.api.nvim_win_is_valid(M._win) then
     vim.schedule(update_once)
   end
@@ -294,16 +552,13 @@ function M.handler(args)
     elseif action == "previous" then
         run_command("previous")
     elseif action == "volume_up" then
-        run_command("volume 0.05+")
+        run_command("volume_up")
     elseif action == "volume_down" then
-        run_command("volume 0.05-")
+        run_command("volume_down")
     elseif action == "toggle_shuffle" then
-        run_command("shuffle Toggle")
+        run_command("toggle_shuffle")
     elseif action == "toggle_repeat" then
-        local current_loop = safe_system(string.format("playerctl -p %s loop", cfg.player))
-        if current_loop == "None" then run_command("loop Playlist")
-        elseif current_loop == "Playlist" then run_command("loop Track")
-        else run_command("loop None") end
+        run_command("toggle_repeat")
     else
         vim.notify("spotify-player: Unknown command '" .. action .. "'", vim.log.levels.WARN)
     end
@@ -363,4 +618,3 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 })
 
 return M
-

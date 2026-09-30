@@ -2,16 +2,12 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**spotify-player.nvim** is a lightweight and elegant plugin for **Neovim** that displays the current playback status of Spotify (or another player compatible with `playerctl`) and allows you to control it without leaving the editor.
-
-
+**spotify-player.nvim** is a lightweight, cross-platform plugin for **Neovim** that displays the current playback status of Spotify and allows you to control it without leaving your editor. Works seamlessly on **Linux**, **macOS**, and **Windows**.
 
 ---
 
 ## Screenshot / Image
 <img width="707" height="281" alt="screenshot" src="https://github.com/user-attachments/assets/bd08b8e5-88e0-4c90-b7ff-6c68fa94b9b3" />
-
-
 
 <img width="1920" height="1080" alt="screenshot2" src="https://github.com/user-attachments/assets/3aff731a-9ae0-4482-bf55-dfbd69bbc6a2" />
 
@@ -21,7 +17,7 @@
 
 - [Features](#features)
 - [Screenshot / Image](#screenshot--image)
-- [Requirements](#requirements)
+- [Platform Support & Requirements](#platform-support--requirements)
 - [Installation](#installation)
 - [Usage](#usage)
   - [Commands](#commands)
@@ -39,22 +35,26 @@
 - Floating window displaying the current song, artist, and album.
 - Built-in controls: `Play/Pause`, `Next/Previous`, `Volume`, `Shuffle`, and `Repeat`.
 - Visual progress bar and playback time.
-- Highly configurable.
-- Very lightweight — only one external dependency: `playerctl` (Linux).
+- Highly configurable appearance and keybindings.
+- **Cross-platform**:
+  - **Linux**: Controlled via `playerctl` (MPRIS).
+  - **macOS**: Controlled natively via AppleScript (`osascript`) — zero external dependencies.
+  - **Windows**: Controlled via PowerShell & SMTC/media keys — zero external dependencies.
 
 ---
 
-## Requirements
+## Platform Support & Requirements
 
-- **Linux**
 - **Neovim** `v0.7+`
-- **playerctl** — command line utility to control media players (Spotify, mpv, etc.) via MPRIS:
-  - Debian/Ubuntu: `sudo apt install playerctl`
-  - Arch Linux: `sudo pacman -S playerctl`
-  - Fedora: `sudo dnf install playerctl`
-- A **Nerd Font** installed and configured in your terminal to display icons correctly (optional, but recommended).
+- **A Nerd Font** installed and configured in your terminal to display icons correctly (optional, but recommended).
 
-> **Note:** macOS and Windows are currently not supported as `playerctl` relies on the Linux MPRIS D-Bus interface.
+### Platform Specifics:
+
+| OS | Backend | Dependencies |
+| :--- | :--- | :--- |
+| **Linux** | `playerctl` | `playerctl` command-line utility:<br>• Debian/Ubuntu: `sudo apt install playerctl`<br>• Arch Linux: `sudo pacman -S playerctl`<br>• Fedora: `sudo dnf install playerctl` |
+| **macOS** | `osascript` | **None** (uses macOS's built-in AppleScript to interface with Spotify directly) |
+| **Windows** | `powershell` | **None** (uses built-in PowerShell & Windows System Media Transport Controls / media keys) |
 
 ---
 
@@ -87,12 +87,12 @@ return {
 
 ### Available Actions
 
-- `next`
-- `previous`
-- `volume_up`
-- `volume_down`
-- `toggle_shuffle`
-- `toggle_repeat`
+- `next` — Next track
+- `previous` — Previous track
+- `volume_up` — Increase volume
+- `volume_down` — Decrease volume
+- `toggle_shuffle` — Toggle shuffle mode (Linux & macOS)
+- `toggle_repeat` — Toggle repeat mode (Linux & macOS)
 
 Example from the Neovim command line:
 
@@ -141,7 +141,8 @@ The plugin is configured by calling `setup()` and passing a table with options. 
 -- lua/plugins/spotify.lua or in your init.lua
 require("spotify-player").setup({
   -- General settings
-  player = "spotify",       -- Player name for playerctl (e.g., "spotify", "spotifyd")
+  backend = "auto",         -- "auto" (detects OS), "playerctl" (Linux), "osascript" (macOS), "windows" (Windows)
+  player = "spotify",       -- Player name for playerctl on Linux (e.g., "spotify", "spotifyd")
   interval_ms = 1000,       -- Update interval in milliseconds
 
   -- Window appearance
@@ -195,7 +196,7 @@ Contributions are welcome! If you want to collaborate:
 3. Make your changes and add tests/examples if applicable.
 4. Open a Pull Request clearly describing the changes.
 
-Suggestions welcome: UI improvements (progress bar, layout), support for more players / OS backends (such as macOS AppleScript support), and more configurable shortcuts.
+Suggestions welcome: UI improvements (progress bar, layout), accessibility options, and more configurable shortcuts.
 
 ---
 
